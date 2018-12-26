@@ -1,5 +1,5 @@
 #julian appleyard
-#version November 27th 2018
+#version November 30th 2018
 
 
 import tweepy #http://docs.tweepy.org/en/v3.6.0/
@@ -115,6 +115,7 @@ def build_network(list_of_retweets, original_tweet_object, existing_graph = {}):
         for tweet in list_of_retweets:
             if not digraph.has_node(tweet.user.id): #if the retweeter is already in the graph we dont need to recheck where they retweeted from
                 new_ids.append(tweet.user.id)
+                digraph.add_node(tweet.user.id)
         for id in new_ids:
             print(f"Who does {id} follow who already retweeted this tweet?") #debug
             api_string = '/friends/ids'
@@ -127,7 +128,7 @@ def build_network(list_of_retweets, original_tweet_object, existing_graph = {}):
     # https://networkx.github.io/documentation/stable/reference/classes/digraph.html
 
     # If we are making a new graph
-    if existing_graph == {}:
+    elif existing_graph == {}:
         list_of_user_ids = [original_tweet_object.user.id] # The first in the list is always the original poster
 
         for tweet in list_of_retweets:
@@ -245,7 +246,6 @@ def main():
 
 
 
-        #later implementation can make this a previously obtained list of retweeters
 
     while True:
         # First get all tweet objects
@@ -259,7 +259,7 @@ def main():
                 ##  900(user)/300(app) requests in a 15-min window
             break
         except tweepy.RateLimitError as e:
-            print("Rate limted exceeded while gathering list of tweet objects ")
+            print("Rate limt exceeded while gathering list of tweet objects ")
             print(e)
             countdown(api_string)
 
@@ -328,8 +328,8 @@ def main():
         # To save digraph and retweet list in pickle file
 
 
-
-main()
+if __name__ == '__main__':
+    main()
 
 
 
