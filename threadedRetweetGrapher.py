@@ -30,7 +30,7 @@ auth.set_access_token(access_token, access_token_secret)
 
 
 #create api variable
-api = tweepy.API(auth)
+api = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
 
 
 
@@ -39,7 +39,9 @@ builder_queue = Queue()
 storage_lock = threading.Lock()
 
 
+storage_path = os.path.join(os.path.abspath(""), 'storage')
 
+main_sleep_time = 30 # how long the main thread sleeps before checking for updates to retweet count
 
 
 
@@ -74,6 +76,7 @@ def countdown(api_string):
 '''
 
 def limit_handled(cursor, api_string):
+    time.sleep(1)
     while True:
         try:
             yield cursor.next()
@@ -86,8 +89,10 @@ def limit_handled(cursor, api_string):
 
 
 
+
+
 '''
-#First takes the tweet id and makes a /statuses/retweets:id api call
+# Takes an updated tweet object and first checks to see if it has
 #Then checks this set of retweets against the existing list of retweets in storage
 #It then adds only the new retweets to the existing list in storage and saves it back to storage
 # returns
@@ -100,12 +105,13 @@ def get_more_retweets(tweet):
             #checking if there are actually any new retweets, because queue may have duplicated requests without new retweets occurring
             storage = {}
             with storage_lock:
-                with open('storage.pkl', 'rb') as f:
+                tweet_path = os.path.join(storage_path, f'{tweet.id}.pkl')
+                with open(tweet_path, 'rb') as f:
                     storage = pickle.load(f)
 
             new_count = tweet.retweet_count
-            old_rt_list = storage[tweet.id]['retweets']
-            if len(storage[tweet.id]['retweets']) > 0:
+            old_rt_list = storage['retweets']
+            if len(storage['retweets']) > 0:
                 old_count = old_rt_list[-1].retweeted_status.retweet_count
             else:
                 old_count = 0
@@ -113,18 +119,18 @@ def get_more_retweets(tweet):
             if new_count == old_count:
                 print(f"Tweet {tweet.id} has no new retweets")#debug
                 return
-
+            print("Making GET for more retweets")
             more_retweets = api.retweets(tweet.id, 100) #GET /statuses/retweets/:id
             print(f"Sent GET {api_string} for {tweet.id} and got {len(more_retweets)} retweets") #debug
                 # Returns up to 100 of the first retweets objects of a given tweet as a list
                 # Rate limited at 75/300 per 15 min window
 
             with storage_lock:
-                with open('storage.pkl', 'rb') as f:
+                with open(tweet_path, 'rb') as f:
                     storage = pickle.load(f)
                 new_rts = []
 
-                existing_rts = storage[tweet.id]['retweets']
+                existing_rts = storage['retweets']
                 print(f"    Storage contains {len(existing_rts)} existing retweets")#debug
                 # Make sure we are not adding dupilcate retweeet objects
                 if len(existing_rts) == 0:
@@ -143,13 +149,14 @@ def get_more_retweets(tweet):
                 else:
                     print(f"    Tweet {tweet.id} has {len(new_rts)} new retweets")
                     total_rts = existing_rts + new_rts
-                    storage[tweet.id]['retweets'] = total_rts
+                    storage['retweets'] = total_rts
 
 
-                    with open('storage.pkl', 'wb') as f:
+                    with open(tweet_path, 'wb') as f:
                         pickle.dump(storage, f)
 
                     return
+
         except tweepy.RateLimitError as e:
             print(f"Rate limted exceeded while gathering retweets for {tweet.id}")
             print(e)
@@ -158,45 +165,53 @@ def get_more_retweets(tweet):
 
 
 '''
-# This function first checks for symmetric edges in the graph and saves it to the dictionary
-# It then draws the graph in various ways and saves the files
-# Function build_network should call this every 5 times it requests follower relationships
+# This function first pulls an existing digraph from storage
+# It then checks this digraph for symmetric edges
+# If there is a symmetric edge, it removes the edge corresponding to a newer retweet
+
+So for some tweet, if B and C follow each other and both retweeted it:
+* the retweet objects are compared for the datetime in which they were posted
+* the if B's retweet object is older than C's, then the edge from C to B is removed
+* otherwise the opposite edge is removed
+
+# and saves it to storage
+# It then draws the graph a
 '''
 
-def draw_graph(tweet, list_of_retweets, digraph):
+def orient_graph(tweet):
 
-    original_tweet_object = tweet
     '''
     #Code to fix symmetric edges
     #We don't want symmetrical edges because we want a retweet network that shows how the tweet travelled
     and it doesn't travel backwards
     '''
-    print(f'Checking {original_tweet_object.id} graph for symmetrical edges')
+    print(f'Checking {tweet.id} graph for symmetrical edges')
     storage ={}
+
+    tweet_path = os.path.join(storage_path, f'{tweet.id}.pkl')
 
     #Locking for critical section of code
     with storage_lock:
-        with open('storage.pkl', 'rb') as f:
+        with open(tweet_path, 'rb') as f:
             storage = pickle.load(f)
 
-
-
+        list_of_retweets = storage['retweets']
+        digraph = nx.from_dict_of_dicts(storage['digraph'], create_using = nx.DiGraph())
         while True:
             node_removed = False
             for edge1 in digraph.edges:
                 #edges are represented as tuples like this: (u,v)
                 #if there are directed edges (u,v) and (v, u) then we need to remove one
-                #edge2 = (edge1[1], edge1[0])
+
                 if digraph.has_edge(edge1[1], edge1[0]):
                     print(f'Nodes {edge1[0]} and {edge1[1]} have symmetric edges between them.')
                     u = {}
                     v = {}
                     #find these nodes in the list of retweet objects but also include the original tweet object
-                    list_of_retweets.append(original_tweet_object)
                     for rt in list_of_retweets:
-                        if rt.user.id == edge1[0]:
+                        if rt.user.id == edge1[0] or tweet.user.id == edge1[0]:
                             u = rt
-                        elif rt.user.id == edge1[1]:
+                        elif rt.user.id == edge1[1] or tweet.user.id == edge1[1]:
                             v = rt
                     #remove the edge which goes from the newer retweet.user to the older one
                     if u.created_at > v.created_at: #created_at returns datetime objects
@@ -215,9 +230,9 @@ def draw_graph(tweet, list_of_retweets, digraph):
 
         dict_dict = nx.to_dict_of_dicts(digraph)
 
-        storage[tweet.id]['digraph'] = dict_dict
+        storage['oriented'] = dict_dict
 
-        with open('storage.pkl', 'wb') as f:
+        with open(tweet_path, 'wb') as f:
             pickle.dump(storage, f)
 
 
@@ -225,7 +240,7 @@ def draw_graph(tweet, list_of_retweets, digraph):
     To save graph in various formats
     '''
     # To save digraph as .gml file for Gephi
-    file_name = f'{tweet.id}.gml'
+    file_name = f'oriented{tweet.id}.gml'
     current_path = os.path.abspath("")
     path = os.path.join(current_path, 'gmlGraphs')
     path = os.path.join(path, file_name)
@@ -233,6 +248,7 @@ def draw_graph(tweet, list_of_retweets, digraph):
     print("File saved as " + file_name) #debug
 
     # To draw digraph with matplotlib and save the plot
+    '''
     plt.clf()
     plt_name = f'{tweet.id}'
     nx.draw_networkx(digraph, arrows = True, with_labels = False)
@@ -240,7 +256,8 @@ def draw_graph(tweet, list_of_retweets, digraph):
     plt.draw()
     plt.savefig(plt_name)
     print(f'Plot saved as {plt_name}.png')
-
+    '''
+    return
 
 
 
@@ -256,29 +273,29 @@ def draw_graph(tweet, list_of_retweets, digraph):
 
 
 '''
-# Takes the tweet id, retrieves existing graph from storage,
-retrieves existing list of retweets from storage
-# Finds follower relationships between them
-# returns
+# Takes the tweet id, retrieves existing full digraph and list of retweets from storage
+# Finds follower relationships between the retweeters
+# Draw an edge from A to B if B follows A
+# Save full digraph for the tweet in storage every 5 times follower requests are made
+# Save again
 '''
 
 def build_network(tweet):
 
     # https://networkx.github.io/documentation/stable/reference/classes/digraph.html
-
+    time.sleep(10) # to make sure that the network is built after the new retweets are requested
     digraph = nx.DiGraph()
+    tweet_path = os.path.join(storage_path, f'{tweet.id}.pkl')
     storage = {}
     with storage_lock:
-        with open('storage.pkl', 'rb') as f:
+        with open(tweet_path, 'rb') as f:
             storage = pickle.load(f)
 
-    existing_graph = storage[tweet.id]['digraph']
-    #print(existing_graph)
-    if existing_graph == None:
-        existing_graph = {}
-    list_of_retweets = storage[tweet.id]['retweets']
+    existing_graph = storage['digraph']
+    next_node = storage['next_node'] #this is the next node to be studied by the graph-building software
+    list_of_retweets = storage['retweets']
 
-    original_tweet_object = tweet
+
     if existing_graph != {}:
         digraph = nx.from_dict_of_dicts(existing_graph, create_using = nx.DiGraph())
         print(f"    Existing digraph contains {len(digraph.nodes())} nodes") #debug
@@ -297,29 +314,37 @@ def build_network(tweet):
             counter = 0
 
             print(f"{enumerator}/{len(new_ids)}    Who does {id} follow who already retweeted this tweet?") #debug
-            for friend_id in limit_handled(tweepy.Cursor(api.friends_ids, id = id).items(), api_string):
+            for friend_id in limit_handled(tweepy.Cursor(api.friends_ids, user_id = id).items(), api_string):
                 if digraph.has_node(friend_id):
                     #If they are following someone who (re)tweeted the tweet, they probably tweeted it from them
                     digraph.add_edge(friend_id, id)
                     counter += 1
                     if counter%5 == 0 and counter != 0:
-                        draw_graph(tweet, list_of_retweets, digraph)
+                        with storage_lock:
+                            with open(tweet_path, 'rb') as f:
+                                storage = pickle.load(f)
+                            print(f"{counter} edges added. Saving digraph...")
+                            dict_dict = nx.to_dict_of_dicts(digraph)
+                            storage['digraph'] = dict_dict
+                            with open(tweet_path, 'wb') as f:
+                                pickle.dump(storage, f)
+
 
 
     # If we are making a new graph
     elif existing_graph == {}:
         print(f"    Making new digraph for {tweet.id}")
-        list_of_user_ids = [original_tweet_object.user.id] # The first in the list is always the original poster
+        list_of_user_ids = [tweet.user.id] # The first in the list is always the original poster
 
         for retweet in list_of_retweets:
             list_of_user_ids.append(retweet.user.id)
         digraph.add_nodes_from(list_of_user_ids)
 
-        for counter, source_id in enumerate(digraph.nodes()):
-            print(f"    {counter}/{len(digraph.nodes())} Checking followers of {source_id} for retweets")
+        for enumerator, source_id in enumerate(digraph.nodes()):
+            print(f"    {enumerator}/{len(digraph.nodes())} Checking followers of {source_id} for retweets")
             api_string = '/followers/ids'
             counter = 0
-            for follower_id in limit_handled(tweepy.Cursor(api.followers_ids, id = source_id).items(), api_string):
+            for follower_id in limit_handled(tweepy.Cursor(api.followers_ids, user_id = source_id).items(), api_string):
                 # Rate limited to 15 Requests in 15 min
 
                 if (digraph.has_node(follower_id)): # https://networkx.github.io/documentation/stable/reference/classes/generated/networkx.DiGraph.has_node.html#networkx.DiGraph.has_node
@@ -330,65 +355,42 @@ def build_network(tweet):
                     digraph.add_edge(source_id, follower_id)
                     counter += 1
                     if counter%5 == 0 and counter != 0:
-                        draw_graph(tweet, list_of_retweets, digraph)
+                        with storage_lock:
+                            with open(tweet_path, 'rb') as f:
+                                storage = pickle.load(f)
 
-    '''
-    #Code to fix symmetric edges
-    #We don't want symmetrical edges because we want a retweet network that shows how the tweet travelled
-    #it doesn't travel backwards
-    '''
-    print(f'Checking {original_tweet_object.id} graph for symmetrical edges')
-    while True:
-        node_removed = False
-        for edge1 in digraph.edges:
-            #edges are represented as tuples like this: (u,v)
-            #if there are directed edges (u,v) and (v, u) then we need to remove one
-            #edge2 = (edge1[1], edge1[0])
-            if digraph.has_edge(edge1[1], edge1[0]):
-                print(f'Nodes {edge1[0]} and {edge1[1]} have symmetric edges between them.')
-                u = {}
-                v = {}
-                #find these nodes in the list of retweet objects but also include the original tweet object
-                list_of_retweets.append(original_tweet_object)
-                for rt in list_of_retweets:
-                    if rt.user.id == edge1[0]:
-                        u = rt
-                    elif rt.user.id == edge1[1]:
-                        v = rt
-                #remove the edge which goes from the newer retweet.user to the older one
-                if u.created_at > v.created_at: #created_at returns datetime objects
-                    digraph.remove_edge(u.user.id, v.user.id)
-                    print(f'Removed edge between {v.user.id} and {u.user.id}') #debug
-                    node_removed = True
-                    break
-                else:
-                    digraph.remove_edge(v.user.id, u.user.id)
-                    print(f'Removed edge between {u.user.id} and {v.user.id}')#debug
-                    node_removed = True
-                    break
-                # if the loop removes an edge then it will need to restart because the digraph has changed
-        if node_removed == False: break #if the for loop completes without removing any nodes, then break the while loop
+                            dict_dict = nx.to_dict_of_dicts(digraph)
+
+                            print(f"{counter} edges added. Saving digraph...")
+                            storage['digraph'] = dict_dict
+
+                            with open(tweet_path, 'wb') as f:
+                                pickle.dump(storage, f)
 
         #tweet
     with storage_lock:
-        with open('storage.pkl', 'rb') as f:
+        with open(tweet_path, 'rb') as f:
             storage = pickle.load(f)
 
         dict_dict = nx.to_dict_of_dicts(digraph)
 
-        storage[tweet.id]['digraph'] = dict_dict
-
-        with open('storage.pkl', 'wb') as f:
+        storage['digraph'] = dict_dict
+        print(f"Finished digraph for {tweet.id}...")
+        with open(tweet_path, 'wb') as f:
             pickle.dump(storage, f)
 
+
+
+
+
     # To save digraph as .gml file for Gephi
-    file_name = f'{tweet.id}.gml'
+    file_name = f'full{tweet.id}.gml'
     current_path = os.path.abspath("")
     path = os.path.join(current_path, 'gmlGraphs')
     path = os.path.join(path, file_name)
     nx.write_gml(digraph, path)
     print("File saved as " + file_name) #debug
-
+    '''
     # To draw digraph with matplotlib and save the plot
     plt.clf()
     plt_name = f'{tweet.id}'
@@ -397,49 +399,49 @@ def build_network(tweet):
     plt.draw()
     plt.savefig(plt_name)
     print(f'Plot saved as {plt_name}.png')
+    '''
 
-
-
+    orient_graph(tweet)
     return
 
 
 
+"""
+# Takes a list of tweet ids and
 
 
+"""
 
 def main(list_of_ids):
     print(f"Running main on {len(list_of_ids)} original statuses") #debug
 
 
-
-    # Read file containing a dictionary
-    ## Where dict[tweet_id]['retweets'] contains a list of retweet objects
-    ## and dict[tweet_id]['digraph'] contains a digraph representated as a dictionary of dictionaries
     storage = {}
-    with storage_lock:
-        with open('storage.pkl', 'rb') as f:
-            storage = pickle.load(f)
 
+    for id in list_of_ids:
+        tweet_path = os.path.join(storage_path, f'{id}.pkl')
+        try:
+            with storage_lock:
+                with open(tweet_path, 'rb') as f:
+                    storage = pickle.load(f)
 
-        print(f"Storage contains data on {len(storage)} tweets")#debug
-        # Read file containing a dictionary
-        ## Where dict[tweet_id]['retweets'] contains a list of retweet objects
-        ## and dict[tweet_id]['digraph'] contains a digraph representated as a dictionary of dictionaries
-
-        #Handles both new tweets and tweets for which it already has data
-        for id in list_of_ids:
-
-            try:
-                dict_of_tweets = {}
-                dict_of_tweets[id] = storage[id]['retweets']
                 print(f"{id} is a previously analyzed tweet") #debug
-            except KeyError as e:
-                storage[id] = {}
-                storage[id]['retweets'] = []
-                storage[id]['digraph'] = {}
-                with open('storage.pkl', 'wb') as f:
-                    pickle.dump(storage, f)
-                print(f"{id} is a new tweet") #debug
+        except FileNotFoundError as e:
+            storage = {}
+            storage['retweets'] = []
+            storage['digraph'] = {}
+            storage['oriented'] = {}
+            storage['next_node'] = 0
+            with open(tweet_path, 'wb') as f:
+                pickle.dump(storage, f)
+            print(f"{id} is a new tweet") #debug
+
+            ## print(f"Storage contains data on {len(storage)} tweets")#debug
+            # Read file containing a dictionary
+            ## Where dict[tweet_id]['retweets'] contains a list of retweet objects
+            ## and dict[tweet_id]['digraph'] contains a digraph representated as a dictionary of dictionaries
+
+            #Handles both new tweets and tweets for which it already has data
     while(True):
 
 
@@ -460,35 +462,41 @@ def main(list_of_ids):
                 print(e)
                 countdown(api_string)
 
-        task_list = []
+
 
         print("Checking retweet count of all tweets at " + datetime.datetime.now().strftime('%b %d, %Y at %H:%M:%S')) #debug
         queue_put = False
         for tweet in list_of_objects:
-            new_count = tweet.retweet_count
-            old_rt_list = storage[tweet.id]['retweets']
+            tweet_path = os.path.join(storage_path, f'{tweet.id}.pkl')
 
-            if len(storage[tweet.id]['retweets']) > 0:
-                old_count = old_rt_list[-1].retweeted_status.retweet_count
-            else:
-                old_count = 0
-            #only check tweet if it has a certain number of more tweets
+            with storage_lock:
+                with open(tweet_path, 'rb') as f:
+                    storage = pickle.load(f)
 
-            if new_count > (old_count) or old_count == 0 :
-                '''
-                #and there isnt already a retweet getter task running for that tweet
-                '''
-                print(f"    Putting {tweet.id} in queues")
+                new_count = tweet.retweet_count
+                old_rt_list = storage['retweets']
+
+                if len(storage['retweets']) > 0:
+                    old_count = old_rt_list[-1].retweeted_status.retweet_count
+                else:
+                    old_count = 0
+                #only check tweet if it has a certain number of more tweets
+
+                if new_count > (old_count) or old_count == 0:
+                    '''
+                    #and there isnt already a retweet getter task running for that tweet
+                    '''
+                    print(f"    Putting {tweet.id} in queues")
 
 
-                retweet_queue.put(tweet)
-                time.sleep(1)
-                builder_queue.put(tweet)
-                queue_put = True
+                    retweet_queue.put(tweet)
+                    time.sleep(1)
+                    builder_queue.put(tweet)
+                    queue_put = True
         if not queue_put:
             print(" No Tweets had new retweets")
 
-        time.sleep(30) #wait a bit so that we can recheck retweet count a maximum of 900 times in 15 min
+        time.sleep(main_sleep_time) #wait a bit so that we can recheck retweet count a maximum of 900 times in 15 min
 
 
 
@@ -520,11 +528,10 @@ if __name__ == '__main__':
 
     print("Starting...")
 
-    tid = 1072537589066973184
 
-#
-#https://twitter.com/dril/status/1073288061222416384
-
+#old
+    #https://twitter.com/AyoCaesar/status/1084526697129656320
+    #https://twitter.com/dril/status/1073288061222416384
     #https://twitter.com/ResistanceHole/status/1072537589066973184
     #https://twitter.com/JamilahLemieux/status/1072565296500801541
     # https://twitter.com/J_Appleyard/status/1062714222663081984
@@ -536,7 +543,18 @@ if __name__ == '__main__':
     # https://twitter.com/IAmMekoB/status/1067605231817670657
     # https://twitter.com/KumarsSalehi/status/1071870040901742592
     # https://twitter.com/PhilosophyTube/status/1071873259644354560
-    list_of_ids = [tid,1073288061222416384,1072565296500801541, 1062714222663081984, 1067605231817670657, 1064397964238573568, 1064292313797668869, 1064025163342200832, 1063959627761680386, 1071873259644354560, 1071870040901742592] #must not exceed 100 tweets
+
+
+ ####
+    #https://twitter.com/uppittynegress/status/1084813938892697600
+    #https://twitter.com/BootsRiley/status/1085069992779866112
+    #https://twitter.com/ejhchess/status/1084935728050651136
+    #https://twitter.com/Realaustinpower/status/7051823472
+    #https://twitter.com/BBCWorld/status/1089604257475715077
+    #https://twitter.com/BBCNews/status/1089932469154004992
+#https://twitter.com/Anderso1A/status/706458719043760128
+    tid = 1084813938892697600
+    list_of_ids = [tid, 706458719043760128,1085069992779866112, 1084935728050651136, 7051823472, 1089932469154004992,1089604257475715077] #must not exceed 100 tweets
 
     main_thread = threading.Thread(target = main_threader, args = (list_of_ids,))
 
