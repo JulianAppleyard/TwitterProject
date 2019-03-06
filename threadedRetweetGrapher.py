@@ -1,22 +1,19 @@
 #julian appleyard
-#version December 8th 2018
-
-
+#version Feb 18th 2019
+import twitter
 import tweepy #http://docs.tweepy.org/en/v3.6.0/
-
-
 import networkx as nx
 
 import pickle
 
-import json
+
+import requests
 import time
 import threading
 from queue import Queue
 import os.path # For saving filees to specific paths
 import matplotlib.pyplot as plt # For drawing digraphs
 import datetime
-#import pprint
 
 access_token= "1043132884759072769-aqQYY7XQ2Rlj5CdXdLRgv0I3us3Dxs"
 access_token_secret = "hIdttcfhoLqvoNVVvs7myVocBlVoKisqGgonqrk6WFXAh"
@@ -24,13 +21,25 @@ consumer_key= "YAUrjz6OEkKtVsnNuG0ZfdI7t"
 consumer_secret= "vs6i2CdSphMn9MXoNg2azdSMqL0fzjQxIpLYXud3CajqFj8xZw"
 
 
+"""
+    TWEEPY SETUP
+"""
+
 #authetication requests
 auth = tweepy.OAuthHandler(consumer_key, consumer_secret)
 auth.set_access_token(access_token, access_token_secret)
-
-
 #create api variable
-api = tweepy.API(auth, wait_on_rate_limit=True, wait_on_rate_limit_notify=True)
+api = tweepy.API(auth)
+
+
+"""
+    PYTHON-TWITTER SETUP
+"""
+api_secondary = twitter.Api(consumer_key = consumer_key, consumer_secret = consumer_secret, access_token_key = access_token, access_token_secret = access_token_secret)
+
+
+
+
 
 
 
@@ -39,7 +48,7 @@ builder_queue = Queue()
 storage_lock = threading.Lock()
 
 
-storage_path = os.path.join(os.path.abspath(""), 'storage')
+storage_path = os.path.join(os.path.abspath(""), 'storage') #this is the path where the graphs and data will be stored
 
 main_sleep_time = 30 # how long the main thread sleeps before checking for updates to retweet count
 
@@ -82,10 +91,30 @@ def limit_handled(cursor, api_string):
             yield cursor.next()
         except StopIteration:
             return
-        except tweepy.RateLimitError:
-            print(f"Rate Limit Exceeded for {api_string}")
+        except tweepy.error.RateLimitError:
+
+            print(f"Rate Limit Reached for {api_string}")
             countdown(api_string)
 
+
+
+class FirstCursorRateError(Exception):
+    pass
+
+def limit_handled_friend(cursor, api_string):
+    time.sleep(1)
+    while True:
+        try:
+            yield cursor.next()
+        except StopIteration:
+            return
+        except tweepy.error.RateLimitError:
+            if cursor.current_page is not None:
+                print(f"Rate Limit Reached for {api_string}")
+                countdown(api_string)
+            else:
+                raise FirstCursorRateError('This is blocking on the first request for this tweet')
+                return
 
 
 
@@ -185,7 +214,7 @@ def orient_graph(tweet):
     #We don't want symmetrical edges because we want a retweet network that shows how the tweet travelled
     and it doesn't travel backwards
     '''
-    print(f'Checking {tweet.id} graph for symmetrical edges')
+    print(f'Checking {tweet.id} graph for symmetric edges')
     storage ={}
 
     tweet_path = os.path.join(storage_path, f'{tweet.id}.pkl')
@@ -198,10 +227,17 @@ def orient_graph(tweet):
         list_of_retweets = storage['retweets']
         digraph = nx.from_dict_of_dicts(storage['digraph'], create_using = nx.DiGraph())
         while True:
-            node_removed = False
+            edge_removed = False
             for edge1 in digraph.edges:
                 #edges are represented as tuples like this: (u,v)
                 #if there are directed edges (u,v) and (v, u) then we need to remove one
+
+                #delete all edges coming into the OP
+                if edge1[1] == tweet.user.id:
+                    digraph.remove_edge(edge1[0], edge1[1])
+                    edge_removed = True
+                    break
+
 
                 if digraph.has_edge(edge1[1], edge1[0]):
                     print(f'Nodes {edge1[0]} and {edge1[1]} have symmetric edges between them.')
@@ -213,19 +249,34 @@ def orient_graph(tweet):
                             u = rt
                         elif rt.user.id == edge1[1] or tweet.user.id == edge1[1]:
                             v = rt
-                    #remove the edge which goes from the newer retweet.user to the older one
+
+
+
+                    #if a person was unfollowed during this time, remove the offending edge
+                    if u == {}:
+                        digraph.remove_edge(edge1[0], edge1[1])
+                        edge_removed = True
+
+                        break
+                    if v =={}:
+                        digraph.remove_edge(edge1[1], edge1[0])
+                        edge_removed = True
+                        break
+
+
+
                     if u.created_at > v.created_at: #created_at returns datetime objects
                         digraph.remove_edge(u.user.id, v.user.id)
-                        print(f'Removed edge between {v.user.id} and {u.user.id}') #debug
-                        node_removed = True
+                        #print(f'Removed edge between {v.user.id} and {u.user.id}') #debug
+                        edge_removed = True
                         break
                     else:
                         digraph.remove_edge(v.user.id, u.user.id)
-                        print(f'Removed edge between {u.user.id} and {v.user.id}')#debug
-                        node_removed = True
+                        #print(f'Removed edge between {u.user.id} and {v.user.id}')#debug
+                        edge_removed = True
                         break
                     # if the loop removes an edge then it will need to restart because the digraph has changed
-            if node_removed == False: break #if the for loop completes without removing any nodes, then break the while loop
+            if edge_removed == False: break #if the for loop completes without removing any nodes, then break the while loop
 
 
         dict_dict = nx.to_dict_of_dicts(digraph)
@@ -265,6 +316,22 @@ def orient_graph(tweet):
 
 
 
+def get_friends_list(user_id, cursor):
+
+    try:
+        #oauth = api.auth.oauth # OAuth1Session object
+        friend_ids_list = []
+        next_cursor, previous_cursor, friends = api_secondary.GetFriendsPaged(user_id = user_id, cursor = cursor, count = 200)
+
+        for friend in friends:
+
+            friend_ids_list.append(friend.id)
+
+        return friend_ids_list, next_cursor
+    except AttributeError as e:
+        print(e)
+        raise tweepy.RateLimitError("Rate limit on friends/list request, waiting on ids requests")
+
 
 
 
@@ -282,104 +349,92 @@ def orient_graph(tweet):
 
 def build_network(tweet):
 
-    # https://networkx.github.io/documentation/stable/reference/classes/digraph.html
-    time.sleep(10) # to make sure that the network is built after the new retweets are requested
+    time.sleep(10) #to make sure that the network is built after the new retweets are requested
     digraph = nx.DiGraph()
     tweet_path = os.path.join(storage_path, f'{tweet.id}.pkl')
-    storage = {}
+    storage ={}
+    # Even if the tweet is new, 'main thread' will have initialized the storage file_name
     with storage_lock:
         with open(tweet_path, 'rb') as f:
             storage = pickle.load(f)
+
 
     existing_graph = storage['digraph']
-    next_node = storage['next_node'] #this is the next node to be studied by the graph-building software
     list_of_retweets = storage['retweets']
+    next_id_pos = storage['next_id_pos'] # this is 0 when the graph is new
 
 
-    if existing_graph != {}:
-        digraph = nx.from_dict_of_dicts(existing_graph, create_using = nx.DiGraph())
-        print(f"    Existing digraph contains {len(digraph.nodes())} nodes") #debug
-        new_ids = []
-        for retweet in list_of_retweets:
-            if not digraph.has_node(retweet.user.id): #if the retweeter is already in the graph we dont need to recheck where they retweeted from
-                new_ids.append(retweet.user.id)
-                digraph.add_node(retweet.user.id)
-        if len(new_ids)==0:
-            print(f" Didnt add new nodes") #debug
-            return
-        print(f" Adding {len(new_ids)} new nodes") #debug
+    # if the existing graph is empty, make a graph with the first node being the OP
+    if existing_graph == {}:
+        print(f"    Making new digraph for {tweet.id}") #debug
+        digraph = nx.DiGraph()
+        digraph.add_node(tweet.user.id)
+        existing_graph = nx.to_dict_of_dicts(digraph) #the existing_graph is now not an empty string
+        # we do not need to check who the original poster follows because we are only concerned with how the
 
-        for enumerator, id in enumerate(new_ids):
-            api_string = '/friends/ids'
-            counter = 0
+    #
 
-            print(f"{enumerator}/{len(new_ids)}    Who does {id} follow who already retweeted this tweet?") #debug
-            for friend_id in limit_handled(tweepy.Cursor(api.friends_ids, user_id = id).items(), api_string):
+    digraph = nx.from_dict_of_dicts(existing_graph, create_using = nx.DiGraph())
+    print(f"    Existing digraph contains {len(digraph.nodes())} nodes") #debug
+    list_of_user_ids = [tweet.user.id]
+
+    for retweet in list_of_retweets:
+        list_of_user_ids.append(retweet.user.id)
+
+    digraph.add_nodes_from(list_of_user_ids) # it doesnt matter if the nodes already exist in the graph
+
+    for enumerator, source_id in enumerate(list_of_user_ids[next_id_pos:], start = next_id_pos): #resume graph-building process at the previous position
+        print(f"    {enumerator}/{len(list_of_user_ids)} Checking followers of {source_id} for retweets")
+
+
+        #
+        try:
+            api_string = "/friends/ids"
+            for friend_id in limit_handled_friend(tweepy.Cursor(api.friends_ids, user_id = source_id).items(), api_string):
                 if digraph.has_node(friend_id):
-                    #If they are following someone who (re)tweeted the tweet, they probably tweeted it from them
-                    digraph.add_edge(friend_id, id)
-                    counter += 1
-                    if counter%5 == 0 and counter != 0:
-                        with storage_lock:
-                            with open(tweet_path, 'rb') as f:
-                                storage = pickle.load(f)
-                            print(f"{counter} edges added. Saving digraph...")
-                            dict_dict = nx.to_dict_of_dicts(digraph)
-                            storage['digraph'] = dict_dict
-                            with open(tweet_path, 'wb') as f:
-                                pickle.dump(storage, f)
+                    digraph.add_edge(friend_id, source_id)
 
+        #this exception is raised when the user has protected tweets
+        except tweepy.TweepError:
+            print("Failed to run the command on that user, Skipping...")
+        except FirstCursorRateError:
+                api_string = "/friends/list"
+                print("     Rate limit on friends/ids requests, making friends/list requests")
+                cursor = -1
+                while(True):
+                    try:
+                        friend_ids_list, cursor = get_friends_list(user_id = source_id, cursor = cursor) #outputs list of ids and next cursor
 
+                        for friend_id in friend_ids_list:
+                            if digraph.has_node(friend_id):
+                                digraph.add_edge(friend_id, source_id)
 
-    # If we are making a new graph
-    elif existing_graph == {}:
-        print(f"    Making new digraph for {tweet.id}")
-        list_of_user_ids = [tweet.user.id] # The first in the list is always the original poster
+                        if cursor == 0:
+                            break #cursor value of 0 indicates that there are no further requests to be made
 
-        for retweet in list_of_retweets:
-            list_of_user_ids.append(retweet.user.id)
-        digraph.add_nodes_from(list_of_user_ids)
+                    except twitter.TwitterError:
+                        if cursor != 0 and cursor != -1: # 0 means that the last page was sent, -1 means that the request for the first page did not go through
+                            countdown(api_string)
 
-        for enumerator, source_id in enumerate(digraph.nodes()):
-            print(f"    {enumerator}/{len(digraph.nodes())} Checking followers of {source_id} for retweets")
-            api_string = '/followers/ids'
-            counter = 0
-            for follower_id in limit_handled(tweepy.Cursor(api.followers_ids, user_id = source_id).items(), api_string):
-                # Rate limited to 15 Requests in 15 min
+                        else:
+                            print(" Rate limit on friends/lists requests, making friends/ids requests")
 
-                if (digraph.has_node(follower_id)): # https://networkx.github.io/documentation/stable/reference/classes/generated/networkx.DiGraph.has_node.html#networkx.DiGraph.has_node
-                    # If the account following the source_id is someone who retweeted the tweet
-                    # We can assume that they retweeting it from source_id
-                    # In the case where they are following multiple members of the list of ids, the one added earlier to the list will take precedent
-                    #print(f'Making edge between {source_id} and {follower_id}')
-                    digraph.add_edge(source_id, follower_id)
-                    counter += 1
-                    if counter%5 == 0 and counter != 0:
-                        with storage_lock:
-                            with open(tweet_path, 'rb') as f:
-                                storage = pickle.load(f)
+                            api_string = "/friends/ids"
+                            for friend_id in limit_handled(tweepy.Cursor(api.friends_ids, user_id = source_id).items(), api_string):
+                                if digraph.has_node(friend_id):
+                                    digraph.add_edge(friend_id, source_id)
+                            break
 
-                            dict_dict = nx.to_dict_of_dicts(digraph)
-
-                            print(f"{counter} edges added. Saving digraph...")
-                            storage['digraph'] = dict_dict
-
-                            with open(tweet_path, 'wb') as f:
-                                pickle.dump(storage, f)
-
-        #tweet
-    with storage_lock:
-        with open(tweet_path, 'rb') as f:
-            storage = pickle.load(f)
-
-        dict_dict = nx.to_dict_of_dicts(digraph)
-
-        storage['digraph'] = dict_dict
-        print(f"Finished digraph for {tweet.id}...")
-        with open(tweet_path, 'wb') as f:
-            pickle.dump(storage, f)
-
-
+        # save after every user is processed
+        with storage_lock:
+            with open(tweet_path, 'rb') as f:
+                storage = pickle.load(f)
+            dict_dict = nx.to_dict_of_dicts(digraph)
+            storage['digraph'] = dict_dict
+            storage['next_id_pos'] = enumerator
+            print(f"{enumerator} users processed. Saving graph-building progress...")
+            with open(tweet_path, 'wb') as f:
+                pickle.dump(storage, f)
 
 
 
@@ -431,7 +486,7 @@ def main(list_of_ids):
             storage['retweets'] = []
             storage['digraph'] = {}
             storage['oriented'] = {}
-            storage['next_node'] = 0
+            storage['next_id_pos'] = 0
             with open(tweet_path, 'wb') as f:
                 pickle.dump(storage, f)
             print(f"{id} is a new tweet") #debug
@@ -475,6 +530,7 @@ def main(list_of_ids):
 
                 new_count = tweet.retweet_count
                 old_rt_list = storage['retweets']
+                next_id_pos = storage['next_id_pos']
 
                 if len(storage['retweets']) > 0:
                     old_count = old_rt_list[-1].retweeted_status.retweet_count
@@ -493,6 +549,11 @@ def main(list_of_ids):
                     time.sleep(1)
                     builder_queue.put(tweet)
                     queue_put = True
+                elif next_id_pos <= len(old_rt_list):
+                    print(f"    Resuming Graph-building for {tweet.id}")
+                    queue_put = True
+                    builder_queue.put(tweet)
+
         if not queue_put:
             print(" No Tweets had new retweets")
 
@@ -553,8 +614,14 @@ if __name__ == '__main__':
     #https://twitter.com/BBCWorld/status/1089604257475715077
     #https://twitter.com/BBCNews/status/1089932469154004992
 #https://twitter.com/Anderso1A/status/706458719043760128
-    tid = 1084813938892697600
-    list_of_ids = [tid, 706458719043760128,1085069992779866112, 1084935728050651136, 7051823472, 1089932469154004992,1089604257475715077] #must not exceed 100 tweets
+#https://twitter.com/BBCSport/status/1092102916876382210
+#https://twitter.com/BBCWorld/status/1095446492997976068
+#https://twitter.com/BBCWorld/status/1095445398666256384
+#https://twitter.com/BenMBland/status/1097407064970878976
+#https://twitter.com/Sunni_Tz/status/1097547656761626627
+#https://twitter.com/AyoCaesar/status/1097978018537066498
+    tid = 1095446492997976068
+    list_of_ids = [tid, 1097407064970878976, 1097547656761626627, 1097978018537066498] #must not exceed 100 tweets
 
     main_thread = threading.Thread(target = main_threader, args = (list_of_ids,))
 
