@@ -1,6 +1,6 @@
 #julian appleyard
 #version Feb 18th 2019
-import twitter
+import twitter #https://pypi.org/project/twitter/
 import tweepy #http://docs.tweepy.org/en/v3.6.0/
 import networkx as nx
 
@@ -35,7 +35,7 @@ api = tweepy.API(auth)
 """
     PYTHON-TWITTER SETUP
 """
-api_secondary = twitter.Api(consumer_key = consumer_key, consumer_secret = consumer_secret, access_token_key = access_token, access_token_secret = access_token_secret)
+api_secondary = twitter.Twitter( auth = twitter.OAuth(access_token, access_token_secret, consumer_key, consumer_secret))
 
 
 
@@ -240,7 +240,7 @@ def orient_graph(tweet):
 
 
                 if digraph.has_edge(edge1[1], edge1[0]):
-                    print(f'Nodes {edge1[0]} and {edge1[1]} have symmetric edges between them.')
+                    #print(f'Nodes {edge1[0]} and {edge1[1]} have symmetric edges between them.')
                     u = {}
                     v = {}
                     #find these nodes in the list of retweet objects but also include the original tweet object
@@ -387,7 +387,6 @@ def build_network(tweet):
         print(f"    {enumerator}/{len(list_of_user_ids)} Checking followers of {source_id} for retweets")
 
 
-        #
         try:
             api_string = "/friends/ids"
             for friend_id in limit_handled_friend(tweepy.Cursor(api.friends_ids, user_id = source_id).items(), api_string):

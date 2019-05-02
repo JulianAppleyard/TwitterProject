@@ -65,6 +65,7 @@ def betweenness_centrality(tweet_id = TWEET_ID):
 
     digraph = nx.from_dict_of_dicts(storage['oriented'], create_using = nx.DiGraph())
 
+    num_nodes = nx.number_of_nodes(digraph)
     betweenness_dict = {}
 
     # All betweenness values are initiially 0
@@ -116,7 +117,10 @@ def betweenness_centrality(tweet_id = TWEET_ID):
             if w != s:
                 betweenness_dict[w] = betweenness_dict[w] + delta[w]
 
-    return betweenness_dict
+    normalized_BC = {}
+    for key, value in betweenness_dict: #this normalizes the BC values to between 0 and 1
+        normalized_BC[key] = value/((num_nodes -1)(num_nodes-2))
+    return normalized_BC
 
 
 """
@@ -259,12 +263,12 @@ def main():
 
     print("Computing betweenness centrality...")
     bet_dict = betweenness_centrality(tweet_id = TWEET_ID)
-    print(bet_dict)
+    #print(bet_dict)
     print("Betweenness centrality distribution stored at PLACEHOLDER")
 
     print(f"Computing {K_VALUE}-path centrality...")
     k_dict = k_path_centrality(tweet_id = TWEET_ID)
-    print(k_dict)
+    #print(k_dict)
     print(f"{K_VALUE}-path centrality stored at PLACEHOLDER")
     print("DONE")
 
