@@ -6,6 +6,8 @@ import os.path
 import math
 import random
 from collections import deque
+import matplotlib.pyplot as plt
+import numpy as np
 #longest induced path is maximum shortest path
 
 
@@ -13,7 +15,7 @@ from collections import deque
 
 STORAGE_PATH = os.path.join(os.path.abspath(""), 'storage')
 TWEET_ID = 1084813938892697600
-K_VALUE = 5
+
 
 
 
@@ -30,6 +32,8 @@ def longest_induced_path(tweet_id = TWEET_ID):
     oriented_dict_dict = storage['oriented']
 
     digraph_o = nx.from_dict_of_dicts(oriented_dict_dict, create_using = nx.DiGraph())
+    largest_component = max(nx.weakly_connected_components(digraph_o), key=len)
+    digraph_o = digraph_o.subgraph(largest_component)
 
     longest = 0
     for node1 in digraph_o:
@@ -45,6 +49,8 @@ def longest_induced_path(tweet_id = TWEET_ID):
             path_length = (len(shortest_1_2)-1)
             if path_length > longest:
                 longest = path_length
+
+
 
     return longest
 
@@ -64,13 +70,18 @@ def betweenness_centrality(tweet_id = TWEET_ID):
         storage = pickle.load(f)
 
     digraph = nx.from_dict_of_dicts(storage['oriented'], create_using = nx.DiGraph())
-
+    # Only take the largest connected component
+    largest_component = max(nx.weakly_connected_components(digraph), key=len)
+    digraph = digraph.subgraph(largest_component)
     num_nodes = nx.number_of_nodes(digraph)
+    print("Nodes in largest weakly connected subgraph: ", num_nodes)
+    num_edges = nx.number_of_edges(digraph)
+    print("Edges in largest wekaly connected subgraph: ", num_edges)
     betweenness_dict = {}
 
     # All betweenness values are initiially 0
     for vertex in digraph:
-        betweenness_dict[vertex] = 0
+        betweenness_dict[vertex] = 0.0
 
     for s in digraph:
         stack = deque() # Empty stack (LIFO) for each vertex looped
@@ -84,11 +95,11 @@ def betweenness_centrality(tweet_id = TWEET_ID):
         for w in digraph:
             p[w] = []
         for t in digraph:
-            sigma[t] = 0
+            sigma[t] = 0.0
             d[t] = -1
 
         sigma[s] = 1
-        d[s] = 0
+        d[s] = 0.0
         queue = deque() # This represents a FIFO queue data structure
         # will use append() to enqueue to the right end of the queue
         # will use popleft() to dequeue the item on the leftmost side
@@ -107,20 +118,24 @@ def betweenness_centrality(tweet_id = TWEET_ID):
                 if d[w] == d[v] + 1:
                     sigma[w] = sigma[w] + sigma[v]
                     p[w].append(v)
+
+
+        """Accumulation"""
         delta = {}
+        betweenness_dict[s] = betweenness_dict[s] + (len(stack) -1) #number of times s is a source
         for v in digraph:
-            delta[v] = 0
+            delta[v] = 0.0
         while len(stack) > 0:
             w = stack.pop()
             for v in p[w]:
                 delta[v] = delta[v] + ((sigma[v]/sigma[w])*(1 + delta[w]))
             if w != s:
-                betweenness_dict[w] = betweenness_dict[w] + delta[w]
+                betweenness_dict[w] = betweenness_dict[w] + delta[w] +1
 
-    normalized_BC = {}
-    for key, value in betweenness_dict: #this normalizes the BC values to between 0 and 1
-        normalized_BC[key] = value/((num_nodes -1)(num_nodes-2))
-    return normalized_BC
+
+
+
+    return betweenness_dict
 
 
 """
@@ -128,7 +143,7 @@ def betweenness_centrality(tweet_id = TWEET_ID):
 
 
 
-    Uses pseudocode from: (Alahakoon, et al. 2011)
+    Uses pseudocode from: (Brandes 2001)
 """
 
 def networkx_betweenness_centrality(tweet_id = TWEET_ID):
@@ -138,19 +153,18 @@ def networkx_betweenness_centrality(tweet_id = TWEET_ID):
         storage = pickle.load(f)
 
     oriented_dict_dict = storage['oriented']
-    digraph_o = nx.from_dict_of_dicts(oriented_dict_dict, create_using = nx.DiGraph())
+    digraph = nx.from_dict_of_dicts(oriented_dict_dict, create_using = nx.DiGraph())
+    # Only take the largest connected component
+    largest_component = max(nx.weakly_connected_components(digraph), key=len)
+    digraph = digraph.subgraph(largest_component)
 
-    betweenness_dict = nx.betweenness_centrality(digraph_o)
+    betweenness_dict = nx.betweenness_centrality(digraph)
     highest_val = 0
     highest_id = 0
     #print(betweenness_dict)
-    for node in betweenness_dict:
-        if betweenness_dict[node] >= highest_val:
-            highest_val = betweenness_dict[node]
-            highest_id = node
 
-    print(highest_id)
-    print("With centrality of ", highest_val)
+
+    return betweenness_dict
 
 
 
@@ -161,7 +175,7 @@ def networkx_betweenness_centrality(tweet_id = TWEET_ID):
 """
 def k_path_centrality(tweet_id = TWEET_ID):
 
-    alpha = random.uniform(-0.5, 0.5) #this function is inclusive
+
     alpha = 0.2
     k_path_dict = {} # a dictionary where the key is the vertex and the value is the k_path centrality
 
@@ -170,11 +184,18 @@ def k_path_centrality(tweet_id = TWEET_ID):
         storage = pickle.load(f)
 
     digraph = nx.from_dict_of_dicts(storage['oriented'], create_using = nx.DiGraph())
+    # Only take the largest connected component
+    largest_component = max(nx.weakly_connected_components(digraph), key=len)
+    digraph = digraph.subgraph(largest_component)
+
     num_nodes = nx.number_of_nodes(digraph)
+    print("Nodes in largest weakly connected subgraph: ", num_nodes)
     num_edges = nx.number_of_edges(digraph)
+    print("Edges in largest weakly connected subgraph: ", num_edges)
     k = round(math.log(num_nodes+num_edges)) # from page 22 (section 4.5 of the paper) this is optimal k value for a given graph
     #this value needs to be rounded to be an integer
-    K_VALUE = k
+
+    print("k is: ",k)
 
     count = {} # a dictionary with the the key being the vertex id and the value being the number of times the vertex has been visited over all the random walks
     explored = {} #  (?) a dictionary with the key being the vertex id and the value being a boolean value indicating whether the vertex has been explored
@@ -186,7 +207,7 @@ def k_path_centrality(tweet_id = TWEET_ID):
         #stack starts as an empty set
     stack = deque() #append() to push pop() (no index) to pop
     t = 2*(k**2)*math.pow(n, 1-(2*alpha))*math.log(n)
-    print(f"t is {t}")
+    #print(f"t is {t}")
 
     i = 1
     while i <= t:
@@ -226,14 +247,16 @@ def k_path_centrality(tweet_id = TWEET_ID):
     for vertex in digraph:
         k_path_dict[vertex] = k * n * (count[vertex]/t)
 
-    return k_path_dict
+
+
+    return k_path_dict, k
 
 
 def main():
     # Takes user input removing all spaces,
     # Expects an integer value corresponding to one of the tweets in storage
     flag = True
-
+    k = 0
     while flag:
         try:
 
@@ -250,12 +273,15 @@ def main():
 
 
             flag = False # If the user enters good values, proceed with the calculations by breaking this loop
-            time.sleep(10)
-            print('test')
+
         except ValueError:
             print("Error: Not a valid value. Inputs must be integers.")
         except FileNotFoundError:
             print("Error: Tweet ID is not valid or does not exist in storage.")
+
+
+
+
 
     print("Computing longest induced path for the entire graph...")
     longest = longest_induced_path(tweet_id = TWEET_ID)
@@ -263,14 +289,98 @@ def main():
 
     print("Computing betweenness centrality...")
     bet_dict = betweenness_centrality(tweet_id = TWEET_ID)
-    #print(bet_dict)
-    print("Betweenness centrality distribution stored at PLACEHOLDER")
 
-    print(f"Computing {K_VALUE}-path centrality...")
-    k_dict = k_path_centrality(tweet_id = TWEET_ID)
+
+    maxBC = bet_dict[max(bet_dict, key = bet_dict.get)]
+
+    minBC = bet_dict[min(bet_dict, key = bet_dict.get)]
+
+    print("Highest betweenness centrality is ", maxBC)
+    print("Lowest betweenness centrality is ", minBC)
+
+    print("Computing NetworkX betweenness centrality...")
+    nx_dict = networkx_betweenness_centrality(tweet_id = TWEET_ID)
+    maxNX = nx_dict[max(nx_dict, key = nx_dict.get)]
+
+    minNX = nx_dict[min(nx_dict, key = nx_dict.get)]
+
+    print(f"Computing k-path centrality...")
+    k_dict,k = k_path_centrality(tweet_id = TWEET_ID)
     #print(k_dict)
-    print(f"{K_VALUE}-path centrality stored at PLACEHOLDER")
-    print("DONE")
+    maxk = k_dict[max(k_dict, key = k_dict.get)]
+    mink = k_dict[min(k_dict, key = k_dict.get)]
 
+    print(f"Highest {k}-path centrality is ", maxk)
+    print(f"Lowest {k}-path centrality is ", mink)
+
+
+
+    print("Saving to file...")
+    storage = {}
+    with open(tweet_path, 'rb') as f:
+        storage = pickle.load(f)
+
+    digraph = nx.from_dict_of_dicts(storage['oriented'], nx.DiGraph())
+    # Only take the largest connected component
+    largest_component = max(nx.weakly_connected_components(digraph), key=len)
+    digraph = digraph.subgraph(largest_component)
+
+    digraph.graph['linduced'] = longest
+    digraph.graph['kvalue'] = k
+
+
+    #bc_values = [] #array of all betweenness centrality values in graph
+
+    for node in digraph:
+        digraph.nodes[node]['kpath'] = k_dict[node]
+
+        digraph.nodes[node]['bc'] = bet_dict[node]
+
+
+        digraph.nodes[node]['nxbc'] = nx_dict[node]
+
+        #bc_values.append(bet_dict[node])
+
+        digraph.nodes[node]['normalizedbc'] = (bet_dict[node]-minBC)/(maxBC-minBC)
+        digraph.nodes[node]['normalizedkpath'] = (k_dict[node]-mink)/(maxk-mink)
+        digraph.nodes[node]['normalizednx'] = (nx_dict[node]-minNX)/(maxBC-minNX)
+
+
+
+        #make new gml
+    file_name = f'analyzed{TWEET_ID}.gml'
+    current_path = os.path.abspath("")
+    path = os.path.join(current_path, 'gmlGraphs')
+    path = os.path.join(path, file_name)
+    nx.write_gml(digraph, path)
+    print("File saved as " + file_name)
+
+    """
+    plt.clf()
+
+    bc_values.sort()
+    bc_percent = []
+    for i,val in enumerate(bc_values):
+
+        bc_percent.append(np.percentile(bc_values, bc_values[i]))
+
+    plt_name = f'bcpercentile{TWEET_ID}'
+    plt.xlabel('Betweeness Centrality')
+    plt.ylabel('Percentile')
+    plt.suptitle('Percentile Distirbution of Betweenness Centrality Values')
+
+    plt.plot(bc_values, bc_percent, marker = '.', linestyle = 'none', color = 'b')
+    axes = plt.gca()
+
+
+    plt.savefig(plt_name)
+    print("File saved as " + plt_name)
+    """
+
+
+
+
+
+    print("DONE")
 if __name__ == '__main__':
     main()

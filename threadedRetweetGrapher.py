@@ -386,7 +386,6 @@ def build_network(tweet):
     for enumerator, source_id in enumerate(list_of_user_ids[next_id_pos:], start = next_id_pos): #resume graph-building process at the previous position
         print(f"    {enumerator}/{len(list_of_user_ids)} Checking followers of {source_id} for retweets")
 
-
         try:
             api_string = "/friends/ids"
             for friend_id in limit_handled_friend(tweepy.Cursor(api.friends_ids, user_id = source_id).items(), api_string):
@@ -619,7 +618,7 @@ if __name__ == '__main__':
 #https://twitter.com/BenMBland/status/1097407064970878976
 #https://twitter.com/Sunni_Tz/status/1097547656761626627
 #https://twitter.com/AyoCaesar/status/1097978018537066498
-    tid = 1095446492997976068
+    tid = 1125804644335271942
     list_of_ids = [tid, 1097407064970878976, 1097547656761626627, 1097978018537066498] #must not exceed 100 tweets
 
     main_thread = threading.Thread(target = main_threader, args = (list_of_ids,))
